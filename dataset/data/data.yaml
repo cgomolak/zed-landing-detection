@@ -1,0 +1,13 @@
+train: /home/cgomolak/Documents/yolov8_dataset/train/images
+val: /home/cgomolak/Documents/yolov8_dataset/valid/images
+test: /home/cgomolak/Documents/yolov8_dataset/test/images
+
+nc: 1
+names: ['landingPads']
+
+roboflow:
+  workspace: cgomolak
+  project: landing-pad-zvclx
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/cgomolak/landing-pad-zvclx/dataset/1
