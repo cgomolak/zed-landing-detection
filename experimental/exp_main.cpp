@@ -12,8 +12,11 @@
 #include <NvInfer.h>
 
 using namespace nvinfer1;
+//
 #define NMS_THRESH 0.4
-#define CONF_THRESH 0.3
+#define CONF_THRESH 0.75
+
+#define LAUNCH_HEIGHT 1.55
 
 void print(std::string msg_prefix, sl::ERROR_CODE err_code, std::string msg_suffix) {
     std::cout << "[Sample] ";
@@ -78,7 +81,7 @@ int main(int argc, char** argv) {
     init_parameters.coordinate_units = sl::COORDINATE_UNITS::METER;
     init_parameters.coordinate_system = sl::COORDINATE_SYSTEM::RIGHT_HANDED_Y_UP; // OpenGL's coordinate system is right_handed
 
-    print("Parameters set.\n")
+    std::cout << "Parameters Set" << std::endl;
 
     if (argc > 1) {
         std::string zed_opt = argv[2];
@@ -88,7 +91,7 @@ int main(int argc, char** argv) {
     // Open the camera
     auto returned_state = zed.open(init_parameters);
     if (returned_state != sl::ERROR_CODE::SUCCESS) {
-        print("Camera Open", returned_state, "Exit program.");
+        std::cout << "Camera Open" << returned_state << "\nExit program.";
         return EXIT_FAILURE;
     }
     // Positional Tracking
@@ -103,11 +106,14 @@ int main(int argc, char** argv) {
     detection_parameters.enable_segmentation = false; // designed to give person pixel mask
     detection_parameters.detection_model = sl::OBJECT_DETECTION_MODEL::CUSTOM_BOX_OBJECTS;
     returned_state = zed.enableObjectDetection(detection_parameters);
+    // Failure of Object Detection Initialization
     if (returned_state != sl::ERROR_CODE::SUCCESS) {
-        print("enableObjectDetection", returned_state, "\nExit program.");
+        std::cout << "enableObjectDetection " << returned_state << "\nExit program.";
         zed.close();
         return EXIT_FAILURE;
     }
+    
+    // Configure Camera and Display
     auto camera_config = zed.getCameraInformation().camera_configuration;
     sl::Resolution pc_resolution(std::min((int) camera_config.resolution.width, 720), std::min((int) camera_config.resolution.height, 404));
     auto camera_info = zed.getCameraInformation(pc_resolution).camera_configuration;
@@ -115,7 +121,6 @@ int main(int argc, char** argv) {
     GLViewer viewer;
     viewer.init(argc, argv, camera_info.calibration_parameters.left_cam, true);
     // ---------
-
 
     // Creating the inference engine class
     std::string engine_name = "";
@@ -138,17 +143,45 @@ int main(int argc, char** argv) {
     sl::Objects objects;
     sl::Pose cam_w_pose;
     cam_w_pose.pose_data.setIdentity();
+    
+    //-----------------------------------------------------------------------------------
+    //
+    // Beginning of launch
+    //
 
-    // Drone launch
+    // Set launch status and get initial position
+    int launch_status = -1;
     if (zed.grab() == sl::ERROR_CODE::SUCCESS) {
-        int launch_height = 0;
-        // Initiate drone launch
-        print("Drone launching to a hight of ", launch_height, "m.\n");
+        POSITIONAL_TRACKING_STATE state = zed.getPostion(cam_w_pose, REFERENCE_FRAME::WORLD);
     }
 
-    // Detection begins in the air
+    // Begin camera feed and flight
     while (viewer.isAvailable()) {
         if (zed.grab() == sl::ERROR_CODE::SUCCESS) {
+
+            // Initiating Launch
+            if(launch_status == -1) {
+                std::cout << "Drone launching to a height of " << LAUNCH_HEIGHT << "m" << std::endl;
+                // droneLaunch(DRONE_HEIGHT);
+                // Show camera feed until launch height reached
+                while (cam_w_pose.getTranslation().tz < (LAUNCH_HEIGHT-0.15)) {
+                    // Get image for inference
+                    zed.retrieveImage(left_sl, sl::VIEW::LEFT);
+                    // Get image for display
+                    left_cv = slMat2cvMat(left_sl);
+                    // Display image
+                    cv::imshow("Launch", left_cv);
+                    cv::waitKey(10);
+                    // GL Viewer
+                    zed.retrieveMeasure(point_cloud, sl::MEASURE::XYZRGBA, sl::MEM::GPU, pc_resolution);
+                    zed.getPosition(cam_w_pose, sl::REFERENCE_FRAME::WORLD);
+                    viewer.updateData(point_cloud, cam_w_pose.pose_data);
+                }
+                // Change launch status for successful launch
+                launch_status = 0 
+            }
+            
+            // Begin Object Detection and Searching
 
             // Get image for inference
             zed.retrieveImage(left_sl, sl::VIEW::LEFT);
@@ -194,18 +227,66 @@ int main(int argc, char** argv) {
             zed.retrieveMeasure(point_cloud, sl::MEASURE::XYZRGBA, sl::MEM::GPU, pc_resolution);
             zed.getPosition(cam_w_pose, sl::REFERENCE_FRAME::WORLD);
             viewer.updateData(point_cloud, objects.object_list, cam_w_pose.pose_data);
-        }
 
-        /*  if (drone.x,y == landing pad.x,y) {
-         *      initiate landing procedure;
-         *      viewer.exit()
-         *      //Remove future viewer.exit()
-         * }
-         */
+            // 1 Object Detected
+            if (detections.size() == 1 && launch_status == 1) {
+                // Change launch status to reflect detected object
+                launch_status = 2;
+                std::cout << "Landing pad detected: " << objects.object_list.front().position() << std::endl;
+
+                sl::float3 pad_position = objects.object_list.front().position();
+                float cam_x = cam_w_pose.getTranslation().tx;
+                float cam_y = cam_w_pose.getTranslation().ty;
+                std::cout << "Camera Position: " << cam_w_pose.getTranslation() << std::endl;
+                std::cout << "Camera Orientation: " << cam_w_pose.getOrientation() << std::endl;
+                //fly_right(pad_position[0] - cam_x);    //Flies right necessary x distance (will fly left if it is negative)
+                //fly_forward(pad_position[1] - cam_y);  //Flies forward necessary y distance
+                std::cout << "Fly Right: " << (pad_position[0] - cam_x) << std::endl;
+                std::cout << "Fly Forward: " << (pad_position[1] - cam_y) << std::endl;
+
+                while (cam_w_pose.getTranslation().ty < (pad_position[1] - 0.1)) {
+                    // Get image for inference
+                    zed.retrieveImage(left_sl, sl::VIEW::LEFT);
+                    // Get image for display
+                    left_cv = slMat2cvMat(left_sl);
+                    // Display image
+                    cv::imshow("Launch", left_cv);
+                    cv::waitKey(10);
+                    // GL Viewer
+                    zed.retrieveMeasure(point_cloud, sl::MEASURE::XYZRGBA, sl::MEM::GPU, pc_resolution);
+                    zed.getPosition(cam_w_pose, sl::REFERENCE_FRAME::WORLD);
+                    viewer.updateData(point_cloud, cam_w_pose.pose_data);
+                }
+
+                // Drone is above landing pad - initiate landing
+                std::cout << "Landing " << std::endl;
+                //triggerLanding();
+                while (cam_w_pose.getTranslation().tz > 0.2) {
+                    // Get image for inference
+                    zed.retrieveImage(left_sl, sl::VIEW::LEFT);
+                    // Get image for display
+                    left_cv = slMat2cvMat(left_sl);
+                    // Display image
+                    cv::imshow("Launch", left_cv);
+                    cv::waitKey(10);
+                    // GL Viewer
+                    zed.retrieveMeasure(point_cloud, sl::MEASURE::XYZRGBA, sl::MEM::GPU, pc_resolution);
+                    zed.getPosition(cam_w_pose, sl::REFERENCE_FRAME::WORLD);
+                    viewer.updateData(point_cloud, cam_w_pose.pose_data);
+                }
+
+                //Set launch status to indicate a sucessful landing
+                launch_status = 3;
+            }
+            
+            if (launch_status == 3) {
+                std::cout << "Mission Complete" << std::endl;
+                viewer.exit();
+                return 0;
+            }
+        }
     }
 
     viewer.exit();
-
-
     return 0;
 }
